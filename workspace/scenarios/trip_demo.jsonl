@@ -1,0 +1,13 @@
+{"t": 0, "op": "bootstrap"}
+{"t": 1, "op": "route", "vehicle": "V1", "src": [10, 10], "dst": [190, 190]}
+{"t": 2, "op": "route", "vehicle": "V2", "src": [190, 10], "dst": [10, 190]}
+{"t": 3, "op": "edit", "tile": "t00", "speed_limit_kph": 30, "name": "t00 限速 30"}
+{"t": 4, "op": "edit", "tile": "t10", "port_shift": {"W:1": [0, 10]}, "expect_fail": true, "name": "错位坏编辑"}
+{"t": 5, "op": "offline", "vehicle": "V2"}
+{"t": 6, "op": "patch", "title": "t00 事故封路", "tile": "t00", "edge": "e_n00_n01", "priority": 300}
+{"t": 7, "op": "edit", "tile": "t01", "speed_limit_kph": 45, "name": "t01 限速 45"}
+{"t": 8, "op": "online", "vehicle": "V2", "at": [150, 10]}
+{"t": 9, "op": "revoke_last_patch"}
+{"t": 10, "op": "refresh", "vehicle": "V1", "at": [60, 60]}
+{"t": 11, "op": "close", "vehicle": "V1"}
+{"t": 12, "op": "close", "vehicle": "V2"}

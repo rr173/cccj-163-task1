@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>高精地图审查台</title>
+<style>
+  :root { --bg:#0f1420; --panel:#182034; --line:#2a3652; --txt:#dbe4f5;
+          --dim:#8fa0c0; --ok:#3fb96f; --warn:#e0a83c; --err:#e05c5c; --acc:#5b9cf5; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 "PingFang SC","Microsoft YaHei",sans-serif;
+         background:var(--bg); color:var(--txt); }
+  header { padding:10px 18px; background:var(--panel); display:flex;
+           align-items:center; gap:16px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; }
+  .ver { font-family:monospace; color:var(--acc); }
+  main { display:grid; grid-template-columns: 1fr 420px; gap:10px; padding:10px; }
+  #map { width:100%; height:calc(100vh - 76px); background:#0b101c;
+         border:1px solid var(--line); border-radius:8px; }
+  aside { height:calc(100vh - 76px); overflow:auto; display:flex;
+          flex-direction:column; gap:10px; }
+  .card { background:var(--panel); border:1px solid var(--line);
+          border-radius:8px; padding:10px 12px; }
+  .card h2 { font-size:13px; margin:0 0 8px; color:var(--dim);
+             text-transform:uppercase; letter-spacing:1px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  td,th { padding:3px 6px; border-bottom:1px solid var(--line);
+          text-align:left; vertical-align:top; }
+  .tag { display:inline-block; padding:0 6px; border-radius:4px;
+         font-size:11px; font-family:monospace; }
+  .t-ok { background:#12351f; color:var(--ok); }
+  .t-err { background:#3d1717; color:var(--err); }
+  .t-warn { background:#3a2c10; color:var(--warn); }
+  .t-info { background:#14263f; color:var(--acc); }
+  .t-dim { background:#222c42; color:var(--dim); }
+  button { background:var(--acc); color:#fff; border:0; border-radius:4px;
+           padding:2px 10px; cursor:pointer; font-size:12px; }
+  button.ghost { background:#2a3652; }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  .issue { font-size:12px; padding:2px 0; }
+  .mono { font-family:monospace; font-size:11px; }
+  details summary { cursor:pointer; color:var(--acc); font-size:12px; }
+  .gen { font-family:monospace; font-size:18px; color:var(--ok); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🗺️ 高精地图审查台</h1>
+  <span>当前有效版本：<span class="ver" id="effective">-</span></span>
+  <span style="flex:1"></span>
+  <button class="ghost" onclick="load()">刷新</button>
+</header>
+<main>
+  <canvas id="map"></canvas>
+  <aside>
+    <div class="card"><h2>区域代际</h2><div id="regions"></div></div>
+    <div class="card"><h2>候选版本</h2><div id="candidates"></div></div>
+    <div class="card"><h2>补丁</h2><div id="patches"></div></div>
+    <div class="card"><h2>车辆快照</h2><div id="snapshots"></div></div>
+  </aside>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let STATE = null;
+
+async function load() {
+  STATE = await (await fetch('/api/review/state')).json();
+  renderAll();
+}
+
+function tag(txt, cls) { return `<span class="tag ${cls}">${txt}</span>`; }
+function sevTag(s) { return s === 'ERROR' ? tag('ERROR','t-err') : tag('WARN','t-warn'); }
+
+function renderAll() {
+  const ev = STATE.effective_version;
+  $('#effective').textContent =
+    JSON.stringify(ev.base) + ' patches=' + JSON.stringify(ev.patches);
+
+  // 区域代际
+  $('#regions').innerHTML = '<table>' + STATE.regions.map(r => {
+    const gens = STATE.generations[r.region_id] || [];
+    const hist = gens.map(g =>
+      `<span class="mono">g${g.generation}@${g.candidate_id.slice(5,13)}</span>`).join(' → ');
+    return `<tr><td><b>${r.region_id}</b></td>
+            <td class="gen">g${r.generation}</td><td>${hist || '-'}</td></tr>`;
+  }).join('') + '</table>';
+
+  // 候选版本
+  $('#candidates').innerHTML = STATE.candidates.slice().reverse().map(c => {
+    const stCls = {PUBLISHED:'t-ok', FAILED:'t-err', VALIDATED:'t-info', DRAFT:'t-dim'}[c.status];
+    const issues = (c.validation?.issues || []).map(i =>
+      `<div class="issue">${sevTag(i.severity)} <span class="mono">${i.code}</span> ${i.message}</div>`).join('');
+    const seam = c.validation?.seam;
+    const cross = c.validation?.cross_region;
+    const acts = [];
+    if (c.status === 'DRAFT' || (c.validation && !c.validation.ok))
+      acts.push(`<button onclick="act('validate','${c.candidate_id}')">验证</button>`);
+    if (c.status === 'VALIDATED')
+      acts.push(`<button onclick="act('publish','${c.candidate_id}')">发布</button>`);
+    return `<div style="margin-bottom:8px">
+      <b>${c.name}</b> ${tag(c.status, stCls)}
+      <span class="mono" style="color:var(--dim)">${c.candidate_id}</span><br>
+      <span class="mono">生效区域: ${c.effective_regions.join(', ')} |
+        编辑瓦片: ${c.edits.map(e=>e.tile_id+'@v'+e.version).join(', ')}</span>
+      ${seam ? `<div class="mono" style="color:var(--dim)">接缝对 ${seam.adjacent_pairs_checked}，
+        配对端口 ${seam.ports_paired}；跨区检查 ${cross.passed}/${cross.total}</div>` : ''}
+      ${issues}
+      ${c.error ? `<div class="issue">${tag('失败','t-err')} ${c.error}</div>` : ''}
+      <div style="margin-top:4px">${acts.join(' ')}</div>
+    </div>`;
+  }).join('') || '<span style="color:var(--dim)">无</span>';
+
+  // 补丁
+  $('#patches').innerHTML = STATE.patches.map(p => `
+    <div style="margin-bottom:6px">
+      ${p.status === 'ACTIVE' ? tag('生效中','t-err') : tag('已撤销','t-dim')}
+      <b>${p.title}</b> <span class="tag t-warn">P${p.priority}</span><br>
+      <span class="mono">${p.patch_id} | 基线 ${JSON.stringify(p.base)}</span><br>
+      ${p.ops.map(o=>`<span class="mono">⚠ ${o.kind} ${o.tile_id}:${o.edge_id}</span>`).join('<br>')}
+      ${p.status === 'ACTIVE'
+        ? `<div><button class="ghost" onclick="revoke('${p.patch_id}')">撤销</button></div>` : ''}
+    </div>`).join('') || '<span style="color:var(--dim)">无</span>';
+
+  // 快照
+  $('#snapshots').innerHTML = STATE.snapshots.slice().reverse().map(s => `
+    <div style="margin-bottom:6px">
+      <b>${s.vehicle_id}</b>
+      ${s.status === 'ACTIVE' ? tag('ACTIVE','t-ok') : tag(s.status,'t-dim')}
+      ${tag(s.reason,'t-info')}<br>
+      <span class="mono">${s.snapshot_id}</span><br>
+      <span class="mono">base=${JSON.stringify(s.base)} tiles=${JSON.stringify(s.tiles)}</span><br>
+      <span class="mono">patches=${JSON.stringify(s.patches.map(p=>p.patch_id||p))}</span>
+      ${s.route ? `<span class="mono"> | 路线 ${s.route.length_m}m</span>` : ''}
+    </div>`).join('') || '<span style="color:var(--dim)">无</span>';
+
+  drawMap();
+}
+
+async function act(kind, id) {
+  await fetch(`/api/candidates/${id}/${kind}`, {method:'POST',
+    headers:{'Content-Type':'application/json'}, body:'{}'});
+  load();
+}
+async function revoke(pid) {
+  await fetch(`/api/patches/${pid}/revoke`, {method:'POST'});
+  load();
+}
+
+// ---------------------------------------------------------------- 地图绘制
+function drawMap() {
+  const cv = $('#map'), ctx = cv.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth * dpr, H = cv.clientHeight * dpr;
+  cv.width = W; cv.height = H;
+  ctx.clearRect(0, 0, W, H);
+  const tiles = STATE.tiles || [];
+  if (!tiles.length) { ctx.fillStyle = '#8fa0c0';
+    ctx.font = `${14*dpr}px sans-serif`;
+    ctx.fillText('暂无已发布瓦片', 20*dpr, 30*dpr); return; }
+
+  // 视野
+  let mnx=1e18, mny=1e18, mxx=-1e18, mxy=-1e18;
+  for (const t of tiles) { const [x0,y0,x1,y1] = t.bbox;
+    mnx=Math.min(mnx,x0); mny=Math.min(mny,y0); mxx=Math.max(mxx,x1); mxy=Math.max(mxy,y1); }
+  const pad = 30*dpr, sc = Math.min((W-2*pad)/(mxx-mnx||1), (H-2*pad)/(mxy-mny||1));
+  const X = x => pad + (x-mnx)*sc, Y = y => H - pad - (y-mny)*sc;
+
+  // 补丁关闭的边
+  const closed = new Set();
+  for (const p of STATE.patches) if (p.status === 'ACTIVE')
+    for (const o of p.ops) if (o.kind.startsWith('CLOSE'))
+      closed.add(o.tile_id + ':' + o.edge_id);
+
+  // 瓦片
+  for (const t of tiles) {
+    const [x0,y0,x1,y1] = t.bbox;
+    ctx.strokeStyle = '#2a3652'; ctx.lineWidth = 1*dpr;
+    ctx.strokeRect(X(x0), Y(y1), (x1-x0)*sc, (y1-y0)*sc);
+    ctx.fillStyle = '#5b9cf5'; ctx.font = `${11*dpr}px monospace`;
+    ctx.fillText(`${t.tile_id}@${t.region_id} v${t.version}`, X(x0)+5*dpr, Y(y1)+14*dpr);
+
+    const nm = Object.fromEntries(t.nodes.map(n => [n.node_id, n]));
+    for (const e of t.edges) {
+      const a = nm[e.src], b = nm[e.dst];
+      const isClosed = closed.has(t.tile_id + ':' + e.edge_id);
+      ctx.strokeStyle = isClosed ? '#e05c5c' : '#3d5a8a';
+      ctx.lineWidth = (isClosed ? 3 : 1.5) * dpr;
+      ctx.beginPath(); ctx.moveTo(X(a.x), Y(a.y)); ctx.lineTo(X(b.x), Y(b.y)); ctx.stroke();
+      if (isClosed) {  // 红叉标记封闭
+        const mx=(X(a.x)+X(b.x))/2, my=(Y(a.y)+Y(b.y))/2, r=5*dpr;
+        ctx.beginPath();
+        ctx.moveTo(mx-r,my-r); ctx.lineTo(mx+r,my+r);
+        ctx.moveTo(mx+r,my-r); ctx.lineTo(mx-r,my+r);
+        ctx.stroke();
+      }
+    }
+    for (const p of t.ports) {
+      ctx.fillStyle = '#e0a83c';
+      ctx.beginPath(); ctx.arc(X(p.x), Y(p.y), 3*dpr, 0, 7); ctx.fill();
+    }
+  }
+
+  // 活跃快照路线
+  const colors = ['#3fb96f', '#e0a83c', '#c678dd', '#5bd5f5'];
+  let ci = 0;
+  for (const s of STATE.snapshots) {
+    if (s.status !== 'ACTIVE' || !s.route) continue;
+    ctx.strokeStyle = colors[ci++ % colors.length]; ctx.lineWidth = 2.5*dpr;
+    ctx.setLineDash([6*dpr, 4*dpr]); ctx.beginPath();
+    let first = true;
+    for (const [tid, nid] of (s.route.nodes || [])) {
+      const t = tiles.find(t => t.tile_id === tid); if (!t) continue;
+      const n = t.nodes.find(n => n.node_id === nid); if (!n) continue;
+      first ? ctx.moveTo(X(n.x), Y(n.y)) : ctx.lineTo(X(n.x), Y(n.y));
+      first = false;
+    }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+}
+
+window.addEventListener('resize', drawMap);
+load(); setInterval(load, 5000);
+</script>
+</body>
+</html>
